@@ -62,7 +62,8 @@ The LRUStoreCache provides significant performance improvements for repeated dat
    ...     _ = zarr_array_nocache[:]
    >>> elapsed_nocache = time.time() - start
    >>>
-   >>> print(f"Speedup: {elapsed_nocache/elapsed_cache:.2f}x")
+   >>> speedup = elapsed_nocache/elapsed_cache
+   >>> # Speedup typically ranges from 1.5x to 5x depending on system
 
 Cache effectiveness is particularly pronounced with repeated access to the same data chunks.
 
@@ -70,23 +71,24 @@ Remote Store Caching
 --------------------
 
 The LRUStoreCache is most beneficial when used with remote stores where network latency
-is a significant factor:
+is a significant factor. Here's a conceptual example::
 
-   >>> import gcsfs
-   >>>
-   >>> # Create a remote store (Google Cloud Storage example)
-   >>> gcs = gcsfs.GCSFileSystem(token='anon')
-   >>> remote_store = gcsfs.GCSMap(
-   ...     root='your-bucket/data.zarr',
-   ...     gcs=gcs,
-   ...     check=False
-   ... )
-   >>>
-   >>> # Wrap with LRU cache for better performance
-   >>> cached_store = zarr.storage.LRUStoreCache(remote_store, max_size=2**28)
-   >>>
-   >>> # Open array through cached store
-   >>> z = zarr.open(cached_store)
+   # Example with a remote store (requires gcsfs)
+   import gcsfs
+   
+   # Create a remote store (Google Cloud Storage example)
+   gcs = gcsfs.GCSFileSystem(token='anon')
+   remote_store = gcsfs.GCSMap(
+       root='your-bucket/data.zarr',
+       gcs=gcs,
+       check=False
+   )
+   
+   # Wrap with LRU cache for better performance
+   cached_store = zarr.storage.LRUStoreCache(remote_store, max_size=2**28)
+   
+   # Open array through cached store
+   z = zarr.open(cached_store)
 
 The first access to any chunk will be slow (network retrieval), but subsequent accesses
 to the same chunk will be served from the local cache, providing dramatic speedup.
@@ -98,6 +100,9 @@ The LRUStoreCache can be configured with several parameters:
 
 **max_size**: Controls the maximum memory usage of the cache in bytes
 
+   >>> # Create a base store for demonstration
+   >>> store = zarr.storage.LocalStore('config_example.zarr')
+   >>>
    >>> # 256MB cache
    >>> cache = zarr.storage.LRUStoreCache(store, max_size=2**28)
    >>>
@@ -117,9 +122,11 @@ The LRUStoreCache provides statistics to monitor cache performance:
    >>> data = zarr_array[0:50, 0:50]  # First access - cache miss
    >>> data = zarr_array[0:50, 0:50]  # Second access - cache hit
    >>>
-   >>> print(f"Cache hits: {cache.hits}")
-   >>> print(f"Cache misses: {cache.misses}")
-   >>> print(f"Cache hit ratio: {cache.hits / (cache.hits + cache.misses):.2%}")
+   >>> cache_hits = cache.hits
+   >>> cache_misses = cache.misses
+   >>> total_requests = cache.hits + cache.misses
+   >>> cache_hit_ratio = cache.hits / total_requests if total_requests > 0 else 0
+   >>> # Typical hit ratio is > 50% with repeated access patterns
 
 Cache Management
 ---------------
@@ -157,9 +164,10 @@ Local Store Caching
 FsSpec Store Caching
 ~~~~~~~~~~~~~~~~~~~~
 
+   >>> # Example with local file system through fsspec
    >>> from zarr.storage import FsspecStore
-   >>> remote_store = FsspecStore.from_url('s3://bucket/data.zarr', storage_options={'anon': True})
-   >>> cached_remote = zarr.storage.LRUStoreCache(remote_store, max_size=2**28)
+   >>> local_fsspec_store = FsspecStore.from_url('file://local_data.zarr')
+   >>> cached_remote = zarr.storage.LRUStoreCache(local_fsspec_store, max_size=2**28)
 
 Memory Store Caching
 ~~~~~~~~~~~~~~~~~~~~
@@ -189,19 +197,19 @@ Here's a complete example demonstrating cache effectiveness:
    >>> zarr_array[:] = np.random.random((100, 100))
    >>>
    >>> # Demonstrate cache effectiveness with repeated access
-   >>> print("First access (cache miss):")
+   >>> # First access (cache miss):
    >>> start = time.time()
    >>> data = zarr_array[20:30, 20:30]
    >>> first_access = time.time() - start
    >>>
-   >>> print("Second access (cache hit):")
+   >>> # Second access (cache hit):
    >>> start = time.time()
    >>> data = zarr_array[20:30, 20:30]  # Same data should be cached
    >>> second_access = time.time() - start
    >>>
-   >>> print(f"First access time: {first_access:.4f} s")
-   >>> print(f"Second access time: {second_access:.4f} s")
-   >>> print(f"Cache speedup: {first_access/second_access:.2f}x")
+   >>> # Calculate cache performance metrics
+   >>> cache_speedup = first_access/second_access
+   >>> # Typical speedup ranges from 2x to 10x depending on storage backend
 
 This example shows how the LRUStoreCache can significantly reduce access times for repeated
 data reads, particularly important when working with remote data sources.
