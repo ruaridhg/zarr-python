@@ -31,7 +31,7 @@ Creating an LRUStoreCache is straightforward - simply wrap any existing store wi
    >>>
    >>> # Create a local store and wrap it with LRU cache
    >>> local_store = zarr.storage.LocalStore('test.zarr')
-   >>> cache = zarr.storage.LRUStoreCache(local_store, max_size=2**28)  # 256MB cache
+   >>> cache = zarr.storage.LRUStoreCache(local_store, max_size=1024 * 1024 * 256)  # 256MB cache
    >>>
    >>> # Create an array using the cached store
    >>> zarr_array = zarr.zeros((100, 100), chunks=(10, 10), dtype='f8', store=cache, mode='w')
