@@ -170,7 +170,7 @@ class LRUStoreCache(Store):
         >>> arr[:] = 42.0
         >>>
         >>> # Now wrap with cache for faster access
-        >>> cached_store = zarr.LRUStoreCache(store, max_size=2**28)  # 256MB cache
+        >>> cached_store = zarr.LRUStoreCache(store, max_size=1024 * 1024 * 256)  # 256MB cache
         >>> cached_arr = zarr.open(cached_store)
         >>>
         >>> # First access loads from disk and caches

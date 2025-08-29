@@ -63,7 +63,6 @@ The LRUStoreCache provides significant performance improvements for repeated dat
    >>> elapsed_nocache = time.time() - start
    >>>
    >>> speedup = elapsed_nocache/elapsed_cache
-   >>> # Speedup typically ranges from 1.5x to 5x depending on system
 
 Cache effectiveness is particularly pronounced with repeated access to the same data chunks.
 
@@ -129,7 +128,7 @@ The LRUStoreCache provides statistics to monitor cache performance:
    >>> # Typical hit ratio is > 50% with repeated access patterns
 
 Cache Management
----------------
+----------------
 
 The cache provides methods for manual cache management:
 
@@ -148,37 +147,7 @@ Best Practices
 1. **Size the cache appropriately**: Set ``max_size`` based on available memory and expected data access patterns
 2. **Use with remote stores**: The cache provides the most benefit when wrapping slow remote stores
 3. **Monitor cache statistics**: Use hit/miss ratios to tune cache size and access patterns
-4. **Consider data locality**: Group related data accesses together to improve cache efficiency
-
-Working with Different Store Types
-----------------------------------
-
-The LRUStoreCache can wrap any store that implements the :class:`zarr.abc.store.Store` interface:
-
-Local Store Caching
-~~~~~~~~~~~~~~~~~~~
-
-   >>> local_store = zarr.storage.LocalStore('data.zarr')
-   >>> cached_local = zarr.storage.LRUStoreCache(local_store, max_size=2**27)
-
-FsSpec Store Caching
-~~~~~~~~~~~~~~~~~~~~
-
-   >>> # Example with local file system through fsspec
-   >>> from zarr.storage import FsspecStore
-   >>> local_fsspec_store = FsspecStore.from_url('file://local_data.zarr')
-   >>> cached_remote = zarr.storage.LRUStoreCache(local_fsspec_store, max_size=2**28)
-
-Memory Store Caching
-~~~~~~~~~~~~~~~~~~~~
-
-   >>> from zarr.storage import MemoryStore
-   >>> memory_store = MemoryStore()
-   >>> cached_memory = zarr.storage.LRUStoreCache(memory_store, max_size=2**26)
-
-.. note::
-   While caching a MemoryStore may seem redundant, it can be useful for limiting memory usage
-   of large in-memory datasets.
+4. **Consider data locality**: Access data in chunks sequentially rather than jumping around randomly to maximize cache reuse
 
 Examples from Real Usage
 -----------------------
@@ -209,7 +178,6 @@ Here's a complete example demonstrating cache effectiveness:
    >>>
    >>> # Calculate cache performance metrics
    >>> cache_speedup = first_access/second_access
-   >>> # Typical speedup ranges from 2x to 10x depending on storage backend
 
 This example shows how the LRUStoreCache can significantly reduce access times for repeated
 data reads, particularly important when working with remote data sources.
