@@ -125,34 +125,66 @@ class LRUStoreCache(Store):
     access, e.g., remote stores that require network communication to store and
     retrieve data.
 
+    The cache stores the raw bytes returned by the underlying store, before any
+    decompression or array processing. This means that compressed data remains
+    compressed in the cache, and decompression happens each time the cached data
+    is accessed. This design choice keeps the cache lightweight while still
+    providing significant performance benefits for network-bound operations.
+
+    This store supports both read and write operations. Write operations use a
+    write-through strategy where data is written to both the underlying store
+    and cached locally. The cache automatically invalidates entries when the
+    underlying data is modified to maintain consistency.
+
     Parameters
     ----------
     store : Store
         The store containing the actual data to be cached.
     max_size : int
-        The maximum size that the cache may grow to, in number of bytes. Provide `None`
-        if you would like the cache to have unlimited size.
+        The maximum size that the cache may grow to, in number of bytes.
+        This parameter is required to prevent unbounded memory growth.
+
+        Recommended minimum values:
+        - For small metadata files: 1MB (1024 * 1024)
+        - For chunk caching: 10MB (1024 * 1024 * 10)
+        - For general use: 256MB (1024 * 1024 * 256)
+        - For high-performance applications: 1GB (1024 * 1024 * 1000)
+
+        Values smaller than your typical chunk size will result in most data
+        being silently excluded from the cache, reducing effectiveness.
 
     Examples
     --------
-    The example below wraps an S3 store with an LRU cache::
+    The example below wraps a LocalStore with an LRU cache for demonstration::
 
-        >>> import s3fs
+        >>> import tempfile
         >>> import zarr
-        >>> s3 = s3fs.S3FileSystem(anon=True, client_kwargs=dict(region_name='eu-west-2'))
-        >>> store = s3fs.S3Map(root='zarr-demo/store', s3=s3, check=False)
-        >>> cache = zarr.LRUStoreCache(store, max_size=2**28)
-        >>> root = zarr.group(store=cache)  # doctest: +REMOTE_DATA
-        >>> z = root['foo/bar/baz']  # doctest: +REMOTE_DATA
-        >>> from timeit import timeit
-        >>> # first data access is relatively slow, retrieved from store
-        ... timeit('print(z[:].tobytes())', number=1, globals=globals())  # doctest: +SKIP
-        b'Hello from the cloud!'
-        0.1081731989979744
-        >>> # second data access is faster, uses cache
-        ... timeit('print(z[:].tobytes())', number=1, globals=globals())  # doctest: +SKIP
-        b'Hello from the cloud!'
-        0.0009490990014455747
+        >>> from zarr.storage import LocalStore
+        >>>
+        >>> # Create a temporary directory for the example
+        >>> temp_dir = tempfile.mkdtemp()
+        >>> store = LocalStore(temp_dir)
+        >>>
+        >>> # Create some test data first
+        >>> arr = zarr.create((1000, 1000), chunks=(100, 100), store=store, dtype='f4')
+        >>> arr[:] = 42.0
+        >>>
+        >>> # Now wrap with cache for faster access
+        >>> cached_store = zarr.LRUStoreCache(store, max_size=2**28)  # 256MB cache
+        >>> cached_arr = zarr.open(cached_store)
+        >>>
+        >>> # First access loads from disk and caches
+        >>> data1 = cached_arr[0:100, 0:100]  # Cache miss
+        >>>
+        >>> # Second access uses cache (much faster for remote stores)
+        >>> data2 = cached_arr[0:100, 0:100]  # Cache hit
+
+    For remote stores where the performance benefit is more apparent::
+
+        >>> from zarr.storage import RemoteStore
+        >>> # remote_store = RemoteStore.from_url("https://example.com/data.zarr")
+        >>> # cached_remote = zarr.LRUStoreCache(remote_store, max_size=2**28)
+
 
     """
 
@@ -163,7 +195,10 @@ class LRUStoreCache(Store):
 
     root: Path
 
-    def __init__(self, store: Store, max_size: int | None, **kwargs: Any) -> None:
+    def __init__(self, store: Store, *, max_size: int, **kwargs: Any) -> None:
+        if not isinstance(max_size, int) or max_size <= 0:
+            raise ValueError("max_size must be a positive integer (bytes)")
+
         # Extract and handle known parameters
         read_only = kwargs.get("read_only", getattr(store, "read_only", False))
 
@@ -360,30 +395,25 @@ class LRUStoreCache(Store):
         return v
 
     def _accommodate_value(self, value_size: int) -> None:
-        if self._max_size is None:
-            return
-        # ensure there is enough space in the cache for a new value
         while self._current_size + value_size > self._max_size:
             v = self._pop_value()
             self._current_size -= buffer_size(v)
 
     def _cache_value(self, key: str, value: Any) -> None:
         # cache a value
-        # Convert Buffer objects to bytes for storage in cache
         if hasattr(value, "to_bytes"):
             cache_value = value.to_bytes()
         else:
             cache_value = value
 
         value_size = buffer_size(cache_value)
-        # check size of the value against max size, as if the value itself exceeds max
-        # size then we are never going to cache it
-        if self._max_size is None or value_size <= self._max_size:
+        # Check if value exceeds max size - if so, don't cache it
+        if value_size <= self._max_size:
             self._accommodate_value(value_size)
-            # Ensure key is string for consistent caching
             cache_key = self._normalize_key(key)
             self._values_cache[cache_key] = cache_value
             self._current_size += value_size
+        # If value_size > max_size, we simply don't cache it (silent skip)
 
     def invalidate(self) -> None:
         """Completely clear the cache."""
