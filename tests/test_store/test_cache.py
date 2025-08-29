@@ -6,60 +6,61 @@ from typing import Any
 import pytest
 
 from zarr.core.buffer import cpu
+from zarr.core.buffer.cpu import Buffer
 from zarr.storage import LRUStoreCache, MemoryStore
 from zarr.testing.store import StoreTests
 
 
-class CountingDict(dict):
+class CountingDict(dict[Any, Any]):
     """A dictionary that counts operations for testing purposes."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.counter = Counter()
+        self.counter: Counter[tuple[str, Any] | str] = Counter()
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> Any:
         self.counter["__getitem__", key] += 1
         return super().__getitem__(key)
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: Any, value: Any) -> None:
         self.counter["__setitem__", key] += 1
         return super().__setitem__(key, value)
 
-    def __contains__(self, key):
+    def __contains__(self, key: Any) -> bool:
         self.counter["__contains__", key] += 1
         return super().__contains__(key)
 
-    def __iter__(self):
+    def __iter__(self) -> Any:
         self.counter["__iter__"] += 1
         return super().__iter__()
 
-    def keys(self):
+    def keys(self) -> Any:
         self.counter["keys"] += 1
         return super().keys()
 
 
-def skip_if_nested_chunks(**kwargs):
+def skip_if_nested_chunks(**kwargs: Any) -> None:
     if kwargs.get("dimension_separator") == "/":
         pytest.skip("nested chunks are unsupported")
 
 
-class TestLRUStoreCache(StoreTests[LRUStoreCache, cpu.Buffer]):
+class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc]
     store_cls = LRUStoreCache
-    buffer_cls = cpu.buffer_prototype.buffer
+    buffer_cls = cpu.Buffer
     CountingClass = CountingDict
     LRUStoreClass = LRUStoreCache
     root = ""
 
-    async def get(self, store: LRUStoreCache, key: str) -> cpu.Buffer:
+    async def get(self, store: LRUStoreCache, key: str) -> Buffer:
         """Get method required by StoreTests."""
         return await store.get(key, prototype=cpu.buffer_prototype)
 
-    async def set(self, store: LRUStoreCache, key: str, value: cpu.Buffer) -> None:
+    async def set(self, store: LRUStoreCache, key: str, value: Buffer) -> None:
         """Set method required by StoreTests."""
         await store.set(key, value)
 
     @pytest.fixture
-    def store_kwargs(self):
+    def store_kwargs(self) -> dict[str, Any]:
         """Provide default kwargs for store creation."""
         return {"store": MemoryStore(), "max_size": 2**27}
 
@@ -69,16 +70,16 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, cpu.Buffer]):
         return self.store_cls(**store_kwargs)
 
     @pytest.fixture
-    def open_kwargs(self):
+    def open_kwargs(self) -> dict[str, Any]:
         """Provide default kwargs for store.open()."""
         return {"store": MemoryStore(), "max_size": 2**27}
 
-    def create_store(self, **kwargs):
+    def create_store(self, **kwargs: Any) -> LRUStoreCache:
         # wrapper therefore no dimension_separator argument
         skip_if_nested_chunks(**kwargs)
         return self.LRUStoreClass(MemoryStore(), max_size=2**27)
 
-    def create_store_from_mapping(self, mapping, **kwargs):
+    def create_store_from_mapping(self, mapping: dict[str, Any], **kwargs: Any) -> LRUStoreCache:
         # Handle creation from existing mapping
         skip_if_nested_chunks(**kwargs)
         # Create a MemoryStore from the mapping
@@ -89,7 +90,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, cpu.Buffer]):
                 underlying_store._store_dict[k] = v
         return self.LRUStoreClass(underlying_store, max_size=2**27)
 
-    def test_cache_values_no_max_size(self):
+    def test_cache_values_no_max_size(self) -> None:
         # setup store
         store = self.CountingClass()
         foo_key = self.root + "foo"
@@ -102,7 +103,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, cpu.Buffer]):
         assert 1 == store.counter["__setitem__", bar_key]
 
         # setup cache
-        cache = self.LRUStoreClass(store, max_size=None)
+        cache = self.LRUStoreClass(store, max_size=1024*1024)
         assert 0 == cache.hits
         assert 0 == cache.misses
 
@@ -154,7 +155,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, cpu.Buffer]):
         assert 0 == store.counter["__getitem__", bar_key]
         assert 1 == store.counter["__setitem__", bar_key]
 
-    def test_cache_values_with_max_size(self):
+    def test_cache_values_with_max_size(self) -> None:
         # setup store
         store = self.CountingClass()
         foo_key = self.root + "foo"
@@ -251,7 +252,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, cpu.Buffer]):
         assert 4 == cache.hits
         assert 2 == cache.misses
 
-    def test_cache_keys(self):
+    def test_cache_keys(self) -> None:
         # setup
         store = self.CountingClass()
         foo_key = self.root + "foo"
@@ -262,7 +263,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, cpu.Buffer]):
         assert 0 == store.counter["__contains__", foo_key]
         assert 0 == store.counter["__iter__"]
         assert 0 == store.counter["keys"]
-        cache = self.LRUStoreClass(store, max_size=None)
+        cache = self.LRUStoreClass(store, max_size=1024*1024)
 
         # keys should be cached on first call
         keys = sorted(cache.keys())

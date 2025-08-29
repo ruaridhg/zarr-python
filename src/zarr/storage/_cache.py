@@ -196,7 +196,7 @@ class LRUStoreCache(Store):
     root: Path
 
     def __init__(self, store: Store, *, max_size: int, **kwargs: Any) -> None:
-        if not isinstance(max_size, int) or max_size <= 0:
+        if max_size <= 0:
             raise ValueError("max_size must be a positive integer (bytes)")
 
         # Extract and handle known parameters
@@ -222,7 +222,7 @@ class LRUStoreCache(Store):
             self.root = Path("/")  # Default root path
 
     @classmethod
-    async def open(cls, store: Store, max_size: int | None, **kwargs: Any) -> "LRUStoreCache":
+    async def open(cls, store: Store, *, max_size: int, **kwargs: Any) -> "LRUStoreCache":
         """
         Create and open the LRU cache store.
 
@@ -230,7 +230,7 @@ class LRUStoreCache(Store):
         ----------
         store : Store
             The underlying store to wrap with caching.
-        max_size : int | None
+        max_size : int
             The maximum size that the cache may grow to, in number of bytes.
         **kwargs : Any
             Additional keyword arguments passed to the store constructor.
@@ -240,7 +240,7 @@ class LRUStoreCache(Store):
         LRUStoreCache
             The opened cache store instance.
         """
-        cache = cls(store, max_size, **kwargs)
+        cache = cls(store, max_size=max_size, **kwargs)
         await cache._open()
         return cache
 
@@ -260,7 +260,7 @@ class LRUStoreCache(Store):
         """
         # Create a new underlying store with the new read_only setting
         underlying_store = self._store.with_read_only(read_only)
-        return LRUStoreCache(underlying_store, self._max_size, read_only=read_only)
+        return LRUStoreCache(underlying_store, max_size=self._max_size, read_only=read_only)
 
     def _normalize_key(self, key: Any) -> str:
         """Convert key to string if it's a Path object, otherwise return as-is"""
@@ -272,7 +272,7 @@ class LRUStoreCache(Store):
         self,
     ) -> tuple[
         Store,
-        int | None,
+        int,
         int,
         list[str] | None,
         dict[Any, Any],
@@ -301,7 +301,7 @@ class LRUStoreCache(Store):
         self,
         state: tuple[
             Store,
-            int | None,
+            int,
             int,
             list[str] | None,
             dict[Any, Any],
