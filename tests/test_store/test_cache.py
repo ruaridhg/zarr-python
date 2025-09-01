@@ -8,6 +8,7 @@ import pytest
 from zarr.core.buffer import cpu
 from zarr.core.buffer.cpu import Buffer
 from zarr.storage import LRUStoreCache, MemoryStore
+from zarr.storage._cache import parse_size
 from zarr.testing.store import StoreTests
 
 
@@ -103,7 +104,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 1 == store.counter["__setitem__", bar_key]
 
         # setup cache
-        cache = self.LRUStoreClass(store, max_size=1024*1024)
+        cache = self.LRUStoreClass(store, max_size=1024 * 1024)
         assert 0 == cache.hits
         assert 0 == cache.misses
 
@@ -263,7 +264,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 0 == store.counter["__contains__", foo_key]
         assert 0 == store.counter["__iter__"]
         assert 0 == store.counter["keys"]
-        cache = self.LRUStoreClass(store, max_size=1024*1024)
+        cache = self.LRUStoreClass(store, max_size=1024 * 1024)
 
         # keys should be cached on first call
         keys = sorted(cache.keys())
@@ -314,3 +315,60 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 3 == store.counter["__contains__", foo_key]
         assert keys == sorted(store)
         assert 1 == store.counter["__iter__"]
+
+    def test_parse_size_integers(self) -> None:
+        """Test parse_size with integer inputs."""
+        assert parse_size(1024) == 1024
+        assert parse_size(0) == 0
+        assert parse_size(2**30) == 2**30
+
+    def test_parse_size_string_numbers(self) -> None:
+        """Test parse_size with string numbers (no suffix)."""
+        assert parse_size("1024") == 1024
+        assert parse_size("2048") == 2048
+        assert parse_size("0") == 0
+        assert parse_size("123.456") == 123
+
+    def test_parse_size_bytes(self) -> None:
+        """Test parse_size with byte suffizes."""
+        assert parse_size("0B") == 0
+        assert parse_size("100B") == 100
+        assert parse_size("100b") == 100
+
+        assert parse_size("1KB") == 1024
+        assert parse_size("1kB") == 1024
+        assert parse_size("2KB") == 2048
+        assert parse_size("0.5KB") == 512
+
+        assert parse_size("1MB") == 1024 * 1024
+        assert parse_size("1mb") == 1024 * 1024
+        assert parse_size("16MB") == 16 * 1024 * 1024
+        assert parse_size("0.5MB") == 512 * 1024
+
+        assert parse_size("1GB") == 1024 * 1024 * 1024
+        assert parse_size("1gb") == 1024 * 1024 * 1024
+        assert parse_size("8GB") == 8 * 1024 * 1024 * 1024
+        assert parse_size("0.5GB") == 512 * 1024 * 1024
+
+        assert parse_size("1TB") == 1024 * 1024 * 1024 * 1024
+        assert parse_size("1tb") == 1024 * 1024 * 1024 * 1024
+        assert parse_size("8TB") == 8 * 1024 * 1024 * 1024 * 1024
+        assert parse_size("0.5TB") == 512 * 1024 * 1024 * 1024
+
+    def test_parse_size_whitespace(self) -> None:
+        """Test parse_size handles whitespace correctly."""
+        assert parse_size(" 1MB ") == 1024 * 1024
+        assert parse_size("  16MB  ") == 16 * 1024 * 1024
+        assert parse_size("\t2GB\n") == 2 * 1024 * 1024 * 1024
+        assert parse_size("1 KB") == 1024
+
+    def test_parse_size_invalid_inputs(self) -> None:
+        """Test parse_size with invalid inputs."""
+        with pytest.raises(TypeError, match="Size must be int or str"):
+            parse_size(None)
+
+        with pytest.raises(TypeError, match="Size must be int or str"):
+            parse_size([1024])
+
+        with pytest.raises(ValueError, match="Invalid size specification"):
+            parse_size("invalid")

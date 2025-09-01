@@ -119,6 +119,64 @@ def _put(
             return f.write(view)
 
 
+def parse_size(size: int | str) -> int:
+    """Parse a size specification into bytes.
+
+    Parameters
+    ----------
+    size : int or str
+        Size specification. If int, treated as bytes.
+        If str, supports suffixes: B, KB, MB, GB, TB (case insensitive).
+
+    Returns
+    -------
+    int
+        Size in bytes
+
+    Examples
+    --------
+    >>> parse_size(1024)
+    1024
+    >>> parse_size("1KB")
+    1024
+    >>> parse_size("16MB")
+    16777216
+    >>> parse_size("2.5GB")
+    2684354560
+    """
+    if isinstance(size, int):
+        return size
+
+    if not isinstance(size, str):
+        raise TypeError(f"Size must be int or str, got {type(size)}")
+
+    size = size.strip().upper()
+
+    # Define size multipliers
+    multipliers = {
+        "KB": 1024,
+        "MB": 1024**2,
+        "GB": 1024**3,
+        "TB": 1024**4,
+        "B": 1,
+    }
+
+    # Try to find a matching suffix
+    for suffix, multiplier in multipliers.items():
+        if size.endswith(suffix):
+            number_part = size[: -len(suffix)].strip()
+            try:
+                return int(float(number_part) * multiplier)
+            except ValueError:
+                raise ValueError(f"Invalid size specification: {size!r}") from None
+
+    # If no suffix found, try to parse as plain number (assume bytes)
+    try:
+        return int(float(size))
+    except ValueError:
+        raise ValueError(f"Invalid size specification: {size!r}") from None
+
+
 class LRUStoreCache(Store):
     """Storage class that implements a least-recently-used (LRU) cache layer over
     some other store. Intended primarily for use with stores that can be slow to
@@ -196,6 +254,7 @@ class LRUStoreCache(Store):
     root: Path
 
     def __init__(self, store: Store, *, max_size: int, **kwargs: Any) -> None:
+        max_size_bytes = parse_size(max_size)
         if max_size <= 0:
             raise ValueError("max_size must be a positive integer (bytes)")
 
@@ -206,7 +265,7 @@ class LRUStoreCache(Store):
         super().__init__(read_only=read_only)
 
         self._store = store
-        self._max_size = max_size
+        self._max_size = max_size_bytes
         self._current_size = 0
         self._keys_cache: list[str] | None = None
         self._contains_cache: dict[Any, Any] = {}
