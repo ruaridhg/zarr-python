@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from typing import Any
+import warnings
 
 import pytest
 
@@ -290,3 +291,47 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 3 == store.counter["__contains__", foo_key]
         assert keys == sorted(store)
         assert 1 == store.counter["__iter__"]
+        
+    async def test_cache_value_too_large_warning(self) -> None:
+        """Test that a warning is emitted when a value is too large to cache."""
+        # setup store with small cache
+        store = self.CountingClass()
+        foo_key = self.root + "foo"
+        large_value = b"x" * 1000  # 1000 bytes
+        small_cache_size = 500  # 500 bytes max cache
+        
+        store[foo_key] = large_value
+        cache = self.LRUStoreClass(store, max_size=small_cache_size)
+        
+        # Test that warning is emitted when trying to cache a value that's too large
+        # This should trigger the warning since 1000 bytes > 500 bytes cache limit
+        with pytest.warns(UserWarning, match=r"Value for key.*exceeds cache max_size.*and will not be cached"):
+            result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == large_value
+        
+        # Verify the value was not actually cached (cache miss on second access)
+        assert cache.hits == 0  # No hits yet
+        assert cache.misses == 1  # One miss from the first access
+        
+        # Second access should also be a miss since value wasn't cached
+        # And it will also emit a warning, so we need to catch that too
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # Ignore warnings for this call
+            result2 = await cache.get(foo_key)
+            assert result2 is not None
+            assert result2.to_bytes() == large_value
+            assert cache.hits == 0  # Still no hits
+            assert cache.misses == 2  # Two misses total
+        
+        # Verify the warning message contains expected information
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await cache.get(foo_key)  # Trigger warning again
+            
+            assert len(w) == 1
+            warning_message = str(w[0].message)
+            assert f"Value for key '{foo_key}'" in warning_message
+            assert "1,000 bytes" in warning_message  # Check formatted number
+            assert "500 bytes" in warning_message    # Check cache size
+            assert "Consider increasing max_size" in warning_message

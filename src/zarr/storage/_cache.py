@@ -455,6 +455,15 @@ class LRUStoreCache(Store):
             cache_key = self._normalize_key(key)
             self._values_cache[cache_key] = cache_value
             self._current_size += value_size
+        else:
+            # Emit warning when value is too large to cache
+            warnings.warn(
+                f"Value for key '{key}' ({value_size:,} bytes) exceeds cache max_size "
+                f"({self._max_size:,} bytes) and will not be cached. Consider increasing "
+                f"max_size if this data is frequently accessed.",
+                UserWarning,
+                stacklevel=3
+            )
 
     def invalidate(self) -> None:
         """Completely clear the cache."""
