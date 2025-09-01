@@ -60,9 +60,13 @@ def _listdir_from_keys(store: Store, path: str | None = None) -> list[str]:
 
 
 def listdir(store: Store, path: Path | None = None) -> list[str]:
-    """Obtain a directory listing for the given path. If `store` provides a `listdir`
+    """
+    Obtain a directory listing for the given path.
+    
+    If `store` provides a `listdir`
     method, this will be called, otherwise will fall back to implementation via the
-    `MutableMapping` interface."""
+    `MutableMapping` interface.
+    """
     path_str = normalize_path(path)
     if hasattr(store, "listdir"):
         # pass through
@@ -120,8 +124,11 @@ def _put(
 
 
 class LRUStoreCache(Store):
-    """Storage class that implements a least-recently-used (LRU) cache layer over
-    some other store. Intended primarily for use with stores that can be slow to
+    """
+    Storage class that implements a least-recently-used (LRU) cache layer over
+    some other store.
+    
+    Intended primarily for use with stores that can be slow to
     access, e.g., remote stores that require network communication to store and
     retrieve data.
 
@@ -262,7 +269,7 @@ class LRUStoreCache(Store):
         underlying_store = self._store.with_read_only(read_only)
         return LRUStoreCache(underlying_store, max_size=self._max_size, read_only=read_only)
 
-    def _normalize_key(self, key: Any) -> str:
+    def _normalize_key(self, key: str | Path) -> str:
         """Convert key to string if it's a Path object, otherwise return as-is"""
         if isinstance(key, Path):
             return str(key)
@@ -334,7 +341,7 @@ class LRUStoreCache(Store):
     def __iter__(self) -> Iterator[str]:
         return self.keys()
 
-    def __contains__(self, key: Any) -> bool:
+    def __contains__(self, key: str | Path) -> bool:
         with self._mutex:
             if key not in self._contains_cache:
                 # Handle both Store objects and dict-like objects
