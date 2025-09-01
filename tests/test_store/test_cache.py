@@ -103,7 +103,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 1 == store.counter["__setitem__", bar_key]
 
         # setup cache
-        cache = self.LRUStoreClass(store, max_size=1024*1024)
+        cache = self.LRUStoreClass(store, max_size=1024 * 1024)
         assert 0 == cache.hits
         assert 0 == cache.misses
 
@@ -263,7 +263,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 0 == store.counter["__contains__", foo_key]
         assert 0 == store.counter["__iter__"]
         assert 0 == store.counter["keys"]
-        cache = self.LRUStoreClass(store, max_size=1024*1024)
+        cache = self.LRUStoreClass(store, max_size=1024 * 1024)
 
         # keys should be cached on first call
         keys = sorted(cache.keys())
