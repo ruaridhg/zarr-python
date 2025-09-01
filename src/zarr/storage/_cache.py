@@ -534,11 +534,18 @@ class LRUStoreCache(Store):
         return value
 
     def __setitem__(self, key: str, value: Buffer) -> None:
-        if hasattr(self._store, "__setitem__"):
-            self._store[key] = value
+        # Check if it's a Store object vs dict-like object
+        if hasattr(self._store, 'supports_listing'):
+            # It's a Store object - can't use sync __setitem__ with async store
+            raise NotImplementedError(
+                "Cannot use [] assignment with async store. Use 'await store.set(key, value)' instead."
+            )
         else:
-            # For async stores, we can't handle this synchronously
-            raise TypeError("Cannot use __setitem__ with async store")
+            # It's a dict-like object (for tests) - use sync interface
+            if hasattr(value, "to_bytes"):
+                self._store[key] = value.to_bytes()
+            else:
+                self._store[key] = value
 
         # Update cache and invalidate keys cache since we may have added a new key
         with self._mutex:
@@ -546,11 +553,20 @@ class LRUStoreCache(Store):
             self._cache_value(self._normalize_key(key), value)
 
     def __delitem__(self, key: Any) -> None:
-        if hasattr(self._store, "__delitem__"):
-            del self._store[key]
+        # Check if it's a Store object vs dict-like object
+        if hasattr(self._store, 'supports_listing'):
+            # It's a Store object - can't use sync __delitem__ with async store
+            raise NotImplementedError(
+                "Cannot use 'del store[key]' with async store. Use 'await store.delete(key)' instead."
+            )
         else:
-            # For async stores, this shouldn't be used - use delete() instead
-            raise NotImplementedError("Use async delete() method for async stores")
+            # It's a dict-like object (for tests) - check if it actually supports deletion
+            try:
+                del self._store[key]
+            except (TypeError, AttributeError):
+                raise NotImplementedError(f"Store {type(self._store).__name__} does not support delete operations") from None
+
+        # Update cache - key has been deleted so invalidate caches
         with self._mutex:
             self._invalidate_keys_unsafe()
             cache_key = self._normalize_key(key)
@@ -575,12 +591,11 @@ class LRUStoreCache(Store):
         # Check if store is writable
         self._check_writable()
 
-        # Delegate to the underlying store for actual deletion
-        if hasattr(self._store, "delete"):
+        # Check if the underlying store supports deletes
+        if self._store.supports_deletes:
             await self._store.delete(key)
         else:
-            # Fallback for stores that don't have async delete
-            del self._store[key]  # type: ignore[attr-defined]
+            raise NotImplementedError(f"Store {type(self._store).__name__} does not support delete operations")
 
         # Invalidate cache entries
         with self._mutex:
@@ -590,40 +605,14 @@ class LRUStoreCache(Store):
 
     async def exists(self, key: str) -> bool:
         # Delegate to the underlying store
-        if hasattr(self._store, "exists"):
-            return await self._store.exists(key)
-        else:
-            # Fallback for stores that don't have async exists
-            if hasattr(self._store, "__contains__"):
-                return key in self._store
-            else:
-                # Final fallback - try to get the key
-                try:
-                    if hasattr(self._store, "__getitem__"):
-                        self._store[key]
-                        return True
-                    else:
-                        return False
-                except KeyError:
-                    return False
+        return await self._store.exists(key)
 
     async def _set(self, key: str, value: Buffer, exclusive: bool = False) -> None:
         # Check if store is writable
         self._check_writable()
 
         # Delegate to the underlying store
-        if hasattr(self._store, "set"):
-            await self._store.set(key, value)
-        else:
-            # Fallback for stores that don't have async set
-            if hasattr(self._store, "__setitem__"):
-                # Convert Buffer to bytes for sync stores
-                if hasattr(value, "to_bytes"):
-                    self._store[key] = value.to_bytes()
-                else:
-                    self._store[key] = value
-            else:
-                raise TypeError("Store does not support setting values")
+        await self._store.set(key, value)
 
         # Update cache
         with self._mutex:
@@ -643,7 +632,7 @@ class LRUStoreCache(Store):
 
         # For byte_range requests, don't use cache for now (could be optimized later)
         if byte_range is not None:
-            if hasattr(self._store, "get") and callable(self._store.get):
+            if callable(self._store.get):
                 # Check if it's an async Store.get method (takes prototype and byte_range)
                 try:
                     if prototype is None:
@@ -678,7 +667,7 @@ class LRUStoreCache(Store):
                 return prototype.buffer.from_bytes(value)
         except KeyError:
             # Cache miss - get from store
-            if hasattr(self._store, "get") and callable(self._store.get):
+            if callable(self._store.get):
                 # Try async Store.get method first
                 try:
                     if prototype is None:
