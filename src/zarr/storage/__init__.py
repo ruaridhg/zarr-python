@@ -17,6 +17,7 @@ from zarr.storage._zip import ZipStore
 __all__ = [
     "FsspecStore",
     "GpuMemoryStore",
+    "LRUStoreCache",
     "LocalStore",
     "LoggingStore",
     "MemoryStore",

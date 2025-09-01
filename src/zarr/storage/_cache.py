@@ -1,3 +1,4 @@
+import asyncio
 import io
 import warnings
 from collections import OrderedDict
@@ -8,41 +9,28 @@ from typing import Any, TypeAlias
 
 import numpy as np
 
-from zarr.abc.store import OffsetByteRequest, RangeByteRequest, Store, SuffixByteRequest
+from zarr.abc.store import (
+    ByteRequest,
+    OffsetByteRequest,
+    RangeByteRequest,
+    Store,
+    SuffixByteRequest,
+)
 from zarr.core.buffer import Buffer, BufferPrototype
 from zarr.core.buffer.core import default_buffer_prototype
 from zarr.storage._utils import normalize_path
 
-ByteRequest: TypeAlias = RangeByteRequest | OffsetByteRequest | SuffixByteRequest
+
+def buffer_size(buffer: Buffer) -> int:
+    """Calculate the size in bytes of a Buffer object."""
+    return buffer.nbytes
 
 
-def buffer_size(v: Any) -> int:
-    """Calculate the size in bytes of a value, handling Buffer objects properly."""
-    if hasattr(v, "__len__") and hasattr(v, "nbytes"):
-        # This is likely a Buffer object
-        return int(v.nbytes)
-    elif hasattr(v, "to_bytes"):
-        # This is a Buffer object, get its bytes representation
-        return len(v.to_bytes())
-    elif isinstance(v, (bytes, bytearray, memoryview)):
-        return len(v)
-    else:
-        # Fallback to numpy
-        return int(np.asarray(v).nbytes)
 
-
-def _path_to_prefix(path: str | None) -> str:
-    # assume path already normalized
-    if path:
-        prefix = path + "/"
-    else:
-        prefix = ""
-    return prefix
-
-
-def _listdir_from_keys(store: Store, path: str | None = None) -> list[str]:
-    # assume path already normalized
-    prefix = _path_to_prefix(path)
+def _listdir_from_keys(store: Store, path: str) -> list[str]:
+    """
+    Extract directory listing from store keys by filtering keys that start with the given path.
+    """
     children: set[str] = set()
     # Handle both Store objects and dict-like objects
     if hasattr(store, "keys") and callable(store.keys):
@@ -52,8 +40,8 @@ def _listdir_from_keys(store: Store, path: str | None = None) -> list[str]:
         return []
 
     for key in keys:
-        if key.startswith(prefix) and len(key) > len(prefix):
-            suffix = key[len(prefix) :]
+        if key.startswith(path) and len(key) > len(path):
+            suffix = key[len(path) :]
             child = suffix.split("/")[0]
             children.add(child)
     return sorted(children)
@@ -83,6 +71,10 @@ def listdir(store: Store, path: Path | None = None) -> list[str]:
 
 
 def _get(path: Path, prototype: BufferPrototype, byte_range: ByteRequest | None) -> Buffer:
+    """
+    Read data from a file path with optional byte range support
+    and return requested data as a Buffer object.
+    """
     if byte_range is None:
         return prototype.buffer.from_bytes(path.read_bytes())
     with path.open("rb") as f:
@@ -105,6 +97,9 @@ def _put(
     start: int | None = None,
     exclusive: bool = False,
 ) -> int | None:
+    """
+    Write buffer data to a file path with optional partial write support.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if start is not None:
         with path.open("r+b") as f:
@@ -127,7 +122,7 @@ class LRUStoreCache(Store):
     """
     Storage class that implements a least-recently-used (LRU) cache layer over
     some other store.
-    
+
     Intended primarily for use with stores that can be slow to
     access, e.g., remote stores that require network communication to store and
     retrieve data.
@@ -150,12 +145,6 @@ class LRUStoreCache(Store):
     max_size : int
         The maximum size that the cache may grow to, in number of bytes.
         This parameter is required to prevent unbounded memory growth.
-
-        Recommended minimum values:
-        - For small metadata files: 1MB (1024 * 1024)
-        - For chunk caching: 10MB (1024 * 1024 * 10)
-        - For general use: 256MB (1024 * 1024 * 256)
-        - For high-performance applications: 1GB (1024 * 1024 * 1000)
 
         Values smaller than your typical chunk size will result in most data
         being silently excluded from the cache, reducing effectiveness.
@@ -202,12 +191,12 @@ class LRUStoreCache(Store):
 
     root: Path
 
-    def __init__(self, store: Store, *, max_size: int, **kwargs: Any) -> None:
+    def __init__(self, store: Store, *, max_size: int) -> None:
         if max_size <= 0:
             raise ValueError("max_size must be a positive integer (bytes)")
 
-        # Extract and handle known parameters
-        read_only = kwargs.get("read_only", getattr(store, "read_only", False))
+        # Always inherit read_only state from the underlying store
+        read_only = getattr(store, "read_only", False)
 
         # Call parent constructor with read_only parameter
         super().__init__(read_only=read_only)
@@ -247,6 +236,11 @@ class LRUStoreCache(Store):
         LRUStoreCache
             The opened cache store instance.
         """
+        # Handle read_only parameter if provided
+        if "read_only" in kwargs:
+            read_only = kwargs.pop("read_only")
+            store = store.with_read_only(read_only)
+
         cache = cls(store, max_size=max_size, **kwargs)
         await cache._open()
         return cache
@@ -267,7 +261,7 @@ class LRUStoreCache(Store):
         """
         # Create a new underlying store with the new read_only setting
         underlying_store = self._store.with_read_only(read_only)
-        return LRUStoreCache(underlying_store, max_size=self._max_size, read_only=read_only)
+        return LRUStoreCache(underlying_store, max_size=self._max_size)
 
     def _normalize_key(self, key: str | Path) -> str:
         """Convert key to string if it's a Path object, otherwise return as-is"""
@@ -344,23 +338,30 @@ class LRUStoreCache(Store):
     def __contains__(self, key: str | Path) -> bool:
         with self._mutex:
             if key not in self._contains_cache:
-                # Handle both Store objects and dict-like objects
-                if hasattr(self._store, "__contains__"):
-                    result = key in self._store
-                    self._contains_cache[key] = bool(result)
-                else:
-                    # Fallback for stores without __contains__
+                # Check if it's a Store object vs dict-like object
+                if hasattr(self._store, 'supports_listing'):
+                    # It's a Store object - use async interface
                     try:
-                        if hasattr(self._store, "__getitem__"):
-                            self._store[key]
-                            self._contains_cache[key] = True
-                        else:
-                            self._contains_cache[key] = False
-                    except KeyError:
-                        self._contains_cache[key] = False
+                        result = asyncio.run(self._store.exists(str(key)))
+                    except RuntimeError:
+                        # Already in async context
+                        raise NotImplementedError(
+                            "Cannot use 'in' operator in async context. Use 'await store.exists(key)' instead."
+                        ) from None
+                else:
+                    # It's a dict-like object (for tests) - use sync interface
+                    result = key in self._store
+                
+                self._contains_cache[key] = bool(result)
             return bool(self._contains_cache[key])
 
     async def clear(self) -> None:
+        """
+        Remove all keys from the store and clear the cache.
+
+        This operation clears both the underlying store and invalidates
+        all cached data to maintain consistency.
+        """
         # Check if store is writable
         self._check_writable()
 
@@ -368,20 +369,48 @@ class LRUStoreCache(Store):
         self.invalidate()
 
     def keys(self) -> Iterator[str]:
+        """
+        Return an iterator over the keys in the store.
+        """
         with self._mutex:
             return iter(self._keys())
 
     def _keys(self) -> list[str]:
         if self._keys_cache is None:
-            # Handle both Store objects and dict-like objects
-            if hasattr(self._store, "keys") and callable(self._store.keys):
-                self._keys_cache = [str(k) for k in self._store.keys()]  # noqa: SIM118
+            # Check if it's a Store object vs dict-like object
+            if hasattr(self._store, 'supports_listing'):
+                # It's a Store object
+                if self._store.supports_listing:
+                    try:
+                        async def collect_keys() -> list[str]:
+                            return [str(key) async for key in self._store.list()]
+                        
+                        keys = asyncio.run(collect_keys())
+                        self._keys_cache = keys
+                    except RuntimeError:
+                        # Already in async context
+                        raise NotImplementedError(
+                            "Cannot list keys in async context - _keys() method needs to be async"
+                        ) from None
+                else:
+                    # Store doesn't support listing
+                    self._keys_cache = []
             else:
-                # Fallback for stores that don't have keys method
-                self._keys_cache = []
+                # It's a dict-like object (for tests)
+                if hasattr(self._store, "keys") and callable(self._store.keys):
+                    keys = [str(k) for k in self._store.keys()]
+                    self._keys_cache = keys
+                else:
+                    self._keys_cache = []
         return self._keys_cache
 
-    def listdir(self, path: Path | None = None) -> list[str]:
+    def listdir(self, path: Path) -> list[str]:
+        """
+        Return a list of directory contents for the given path with caching.
+
+        This method provides a cached version of directory listings to improve
+        performance for repeated directory access operations.
+        """
         with self._mutex:
             # Normalize path to string for consistent caching
             path_key = self._normalize_key(path) if path is not None else None
@@ -393,9 +422,12 @@ class LRUStoreCache(Store):
                 return listing
 
     async def getsize(self, key: str) -> int:
+        """
+        Get the size in bytes of the value stored at the given key.
+        """
         return await self._store.getsize(key)
 
-    def _pop_value(self) -> Any:
+    def _pop_value(self) -> bytes:
         # remove the first value from the cache, as this will be the least recently
         # used value
         _, v = self._values_cache.popitem(last=False)
@@ -404,53 +436,61 @@ class LRUStoreCache(Store):
     def _accommodate_value(self, value_size: int) -> None:
         while self._current_size + value_size > self._max_size:
             v = self._pop_value()
-            self._current_size -= buffer_size(v)
+            self._current_size -= len(v)
 
-    def _cache_value(self, key: str, value: Any) -> None:
-        # cache a value
-        if hasattr(value, "to_bytes"):
+    def _cache_value(self, key: str, value: Buffer) -> None:
+        """Cache a value, handling both Buffer objects and bytes."""
+        # Convert to bytes if needed
+        if isinstance(value, Buffer):
             cache_value = value.to_bytes()
         else:
+            # Already bytes
             cache_value = value
 
-        value_size = buffer_size(cache_value)
+        value_size = len(cache_value)
+
         # Check if value exceeds max size - if so, don't cache it
         if value_size <= self._max_size:
             self._accommodate_value(value_size)
             cache_key = self._normalize_key(key)
             self._values_cache[cache_key] = cache_value
             self._current_size += value_size
-        # If value_size > max_size, we simply don't cache it (silent skip)
 
     def invalidate(self) -> None:
         """Completely clear the cache."""
         with self._mutex:
             self._values_cache.clear()
-            self._invalidate_keys()
             self._current_size = 0
+            self._invalidate_keys_unsafe()
 
-    def invalidate_values(self) -> None:
-        """Clear the values cache."""
-        with self._mutex:
-            self._values_cache.clear()
-
+            
     def invalidate_keys(self) -> None:
-        """Clear the keys cache."""
+        """Clear the keys cache and all related caches."""
         with self._mutex:
-            self._invalidate_keys()
+            self._keys_cache = None
+            self._contains_cache.clear()
+            self._listdir_cache.clear()
 
-    def _invalidate_keys(self) -> None:
+    def _invalidate_keys_unsafe(self) -> None:
+        """Clear the keys cache without acquiring mutex (assumes mutex already held)."""
         self._keys_cache = None
         self._contains_cache.clear()
         self._listdir_cache.clear()
 
-    def _invalidate_value(self, key: Any) -> None:
+    def _invalidate_value_unsafe(self, key: Any) -> None:
+        """Remove a value from the cache and update the current size."""
         cache_key = self._normalize_key(key)
         if cache_key in self._values_cache:
             value = self._values_cache.pop(cache_key)
-            self._current_size -= buffer_size(value)
+            self._current_size -= len(value)
 
-    def __getitem__(self, key: Any) -> Any:
+    def invalidate_values(self) -> None:
+        """Clear only the values cache, keeping other caches intact."""
+        with self._mutex:
+            self._values_cache.clear()
+            self._current_size = 0
+
+    def __getitem__(self, key: str) -> Any:
         cache_key = self._normalize_key(key)
         try:
             # first try to obtain the value from the cache
@@ -463,11 +503,27 @@ class LRUStoreCache(Store):
 
         except KeyError:
             # cache miss, retrieve value from the store
-            if hasattr(self._store, "__getitem__"):
-                value = self._store[key]
+            # Check if it's a Store object vs dict-like object
+            if hasattr(self._store, 'supports_listing'):
+                # It's a Store object - use async interface
+                try:
+                    prototype = default_buffer_prototype()
+                    result = asyncio.run(self._store.get(str(key), prototype))
+                    if result is None:
+                        raise KeyError(f"Key {key} not found in store")
+                    value = result.to_bytes()  # Convert to bytes for consistency
+                except RuntimeError:
+                    # Already in async context
+                    raise NotImplementedError(
+                        "Cannot use [] operator in async context. Use 'await store.get(key)' instead."
+                    ) from None
             else:
-                # Fallback for async stores
-                raise KeyError(f"Key {key} not found in store") from None
+                # It's a dict-like object (for tests) - use sync interface
+                try:
+                    value = self._store[key]  # This returns bytes directly
+                except KeyError:
+                    raise KeyError(f"Key {key} not found in store") from None
+
             with self._mutex:
                 self.misses += 1
                 # need to check if key is not in the cache, as it may have been cached
@@ -486,7 +542,7 @@ class LRUStoreCache(Store):
 
         # Update cache and invalidate keys cache since we may have added a new key
         with self._mutex:
-            self._invalidate_keys()
+            self._invalidate_keys_unsafe()
             self._cache_value(self._normalize_key(key), value)
 
     def __delitem__(self, key: Any) -> None:
@@ -496,9 +552,9 @@ class LRUStoreCache(Store):
             # For async stores, this shouldn't be used - use delete() instead
             raise NotImplementedError("Use async delete() method for async stores")
         with self._mutex:
-            self._invalidate_keys()
+            self._invalidate_keys_unsafe()
             cache_key = self._normalize_key(key)
-            self._invalidate_value(cache_key)
+            self._invalidate_value_unsafe(cache_key)
 
     def __eq__(self, value: object) -> bool:
         return type(self) is type(value) and self._store.__eq__(value._store)  # type: ignore[attr-defined]
@@ -528,9 +584,9 @@ class LRUStoreCache(Store):
 
         # Invalidate cache entries
         with self._mutex:
-            self._invalidate_keys()
+            self._invalidate_keys_unsafe()
             cache_key = self._normalize_key(key)
-            self._invalidate_value(cache_key)
+            self._invalidate_value_unsafe(cache_key)
 
     async def exists(self, key: str) -> bool:
         # Delegate to the underlying store
@@ -571,9 +627,9 @@ class LRUStoreCache(Store):
 
         # Update cache
         with self._mutex:
-            self._invalidate_keys()
+            self._invalidate_keys_unsafe()
             cache_key = self._normalize_key(key)
-            self._invalidate_value(cache_key)
+            self._invalidate_value_unsafe(cache_key)
             self._cache_value(cache_key, value)
 
     async def get(
@@ -737,6 +793,6 @@ class LRUStoreCache(Store):
             for key, _start, _value in key_start_values:
                 # For now, just invalidate the cache for these keys
                 with self._mutex:
-                    self._invalidate_keys()
+                    self._invalidate_keys_unsafe()
                     cache_key = self._normalize_key(key)
-                    self._invalidate_value(cache_key)
+                    self._invalidate_value_unsafe(cache_key)
