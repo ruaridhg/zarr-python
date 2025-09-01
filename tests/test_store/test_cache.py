@@ -90,7 +90,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
                 underlying_store._store_dict[k] = v
         return self.LRUStoreClass(underlying_store, max_size=2**27)
 
-    def test_cache_values_no_max_size(self) -> None:
+    async def test_cache_values_no_max_size(self) -> None:
         # setup store
         store = self.CountingClass()
         foo_key = self.root + "foo"
@@ -107,26 +107,33 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 0 == cache.hits
         assert 0 == cache.misses
 
-        # test first __getitem__, cache miss
-        assert b"xxx" == cache[foo_key]
+        # test first get(), cache miss
+        result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == b"xxx"
         assert 1 == store.counter["__getitem__", foo_key]
         assert 1 == store.counter["__setitem__", foo_key]
         assert 0 == cache.hits
         assert 1 == cache.misses
 
-        # test second __getitem__, cache hit
-        assert b"xxx" == cache[foo_key]
+        # test second get(), cache hit
+        result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == b"xxx"
         assert 1 == store.counter["__getitem__", foo_key]
         assert 1 == store.counter["__setitem__", foo_key]
         assert 1 == cache.hits
         assert 1 == cache.misses
 
-        # test __setitem__, __getitem__
-        cache[foo_key] = b"zzz"
+        # test set(), get()
+        from zarr.core.buffer.cpu import Buffer
+        await cache.set(foo_key, Buffer.from_bytes(b"zzz"))
         assert 1 == store.counter["__getitem__", foo_key]
         assert 2 == store.counter["__setitem__", foo_key]
         # should be a cache hit
-        assert b"zzz" == cache[foo_key]
+        result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == b"zzz"
         assert 1 == store.counter["__getitem__", foo_key]
         assert 2 == store.counter["__setitem__", foo_key]
         assert 2 == cache.hits
@@ -134,19 +141,22 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
 
         # manually invalidate all cached values
         cache.invalidate_values()
-        assert b"zzz" == cache[foo_key]
+        result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == b"zzz"
         assert 2 == store.counter["__getitem__", foo_key]
         assert 2 == store.counter["__setitem__", foo_key]
         cache.invalidate()
-        assert b"zzz" == cache[foo_key]
+        result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == b"zzz"
         assert 3 == store.counter["__getitem__", foo_key]
         assert 2 == store.counter["__setitem__", foo_key]
 
-        # test __delitem__
-        del cache[foo_key]
-        with pytest.raises(KeyError):
-            # noinspection PyStatementEffect
-            cache[foo_key]
+        # test delete()
+        await cache.delete(foo_key)
+        result = await cache.get(foo_key)
+        assert result is None
         with pytest.raises(KeyError):
             # noinspection PyStatementEffect
             store[foo_key]
@@ -155,7 +165,7 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 0 == store.counter["__getitem__", bar_key]
         assert 1 == store.counter["__setitem__", bar_key]
 
-    def test_cache_values_with_max_size(self) -> None:
+    async def test_cache_values_with_max_size(self) -> None:
         # setup store
         store = self.CountingClass()
         foo_key = self.root + "foo"
@@ -169,90 +179,55 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 0 == cache.hits
         assert 0 == cache.misses
 
-        # test first 'foo' __getitem__, cache miss
-        assert b"xxx" == cache[foo_key]
+        # test first 'foo' get(), cache miss
+        result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == b"xxx"
         assert 1 == store.counter["__getitem__", foo_key]
         assert 0 == cache.hits
         assert 1 == cache.misses
 
-        # test second 'foo' __getitem__, cache hit
-        assert b"xxx" == cache[foo_key]
+        # test second 'foo' get(), cache hit
+        result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == b"xxx"
         assert 1 == store.counter["__getitem__", foo_key]
         assert 1 == cache.hits
         assert 1 == cache.misses
 
-        # test first 'bar' __getitem__, cache miss
-        assert b"yyy" == cache[bar_key]
+        # test first 'bar' get(), cache miss
+        result = await cache.get(bar_key)
+        assert result is not None
+        assert result.to_bytes() == b"yyy"
         assert 1 == store.counter["__getitem__", bar_key]
         assert 1 == cache.hits
         assert 2 == cache.misses
 
-        # test second 'bar' __getitem__, cache hit
-        assert b"yyy" == cache[bar_key]
+        # test second 'bar' get(), cache hit
+        result = await cache.get(bar_key)
+        assert result is not None
+        assert result.to_bytes() == b"yyy"
         assert 1 == store.counter["__getitem__", bar_key]
         assert 2 == cache.hits
         assert 2 == cache.misses
 
-        # test 'foo' __getitem__, should have been evicted, cache miss
-        assert b"xxx" == cache[foo_key]
+        # test 'foo' get(), should have been evicted, cache miss
+        result = await cache.get(foo_key)
+        assert result is not None
+        assert result.to_bytes() == b"xxx"
         assert 2 == store.counter["__getitem__", foo_key]
         assert 2 == cache.hits
         assert 3 == cache.misses
 
-        # test 'bar' __getitem__, should have been evicted, cache miss
-        assert b"yyy" == cache[bar_key]
+        # test 'bar' get(), should have been evicted, cache miss
+        result = await cache.get(bar_key)
+        assert result is not None
+        assert result.to_bytes() == b"yyy"
         assert 2 == store.counter["__getitem__", bar_key]
         assert 2 == cache.hits
         assert 4 == cache.misses
 
-        # setup store
-        store = self.CountingClass()
-        store[foo_key] = b"xxx"
-        store[bar_key] = b"yyy"
-        assert 0 == store.counter["__getitem__", foo_key]
-        assert 0 == store.counter["__getitem__", bar_key]
-        # setup cache - can hold two items
-        cache = self.LRUStoreClass(store, max_size=6)
-        assert 0 == cache.hits
-        assert 0 == cache.misses
-
-        # test first 'foo' __getitem__, cache miss
-        assert b"xxx" == cache[foo_key]
-        assert 1 == store.counter["__getitem__", foo_key]
-        assert 0 == cache.hits
-        assert 1 == cache.misses
-
-        # test second 'foo' __getitem__, cache hit
-        assert b"xxx" == cache[foo_key]
-        assert 1 == store.counter["__getitem__", foo_key]
-        assert 1 == cache.hits
-        assert 1 == cache.misses
-
-        # test first 'bar' __getitem__, cache miss
-        assert b"yyy" == cache[bar_key]
-        assert 1 == store.counter["__getitem__", bar_key]
-        assert 1 == cache.hits
-        assert 2 == cache.misses
-
-        # test second 'bar' __getitem__, cache hit
-        assert b"yyy" == cache[bar_key]
-        assert 1 == store.counter["__getitem__", bar_key]
-        assert 2 == cache.hits
-        assert 2 == cache.misses
-
-        # test 'foo' __getitem__, should still be cached
-        assert b"xxx" == cache[foo_key]
-        assert 1 == store.counter["__getitem__", foo_key]
-        assert 3 == cache.hits
-        assert 2 == cache.misses
-
-        # test 'bar' __getitem__, should still be cached
-        assert b"yyy" == cache[bar_key]
-        assert 1 == store.counter["__getitem__", bar_key]
-        assert 4 == cache.hits
-        assert 2 == cache.misses
-
-    def test_cache_keys(self) -> None:
+    async def test_cache_keys(self) -> None:
         # setup
         store = self.CountingClass()
         foo_key = self.root + "foo"
@@ -282,7 +257,8 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert 1 == store.counter["keys"]
 
         # cache should be cleared if store is modified - crude but simple for now
-        cache[baz_key] = b"zzz"
+        from zarr.core.buffer.cpu import Buffer
+        await cache.set(baz_key, Buffer.from_bytes(b"zzz"))
         keys = sorted(cache.keys())
         assert keys == [bar_key, baz_key, foo_key]
         assert 2 == store.counter["keys"]
