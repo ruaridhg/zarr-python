@@ -1,30 +1,18 @@
 import asyncio
-import io
 import warnings
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable, Iterator
 from pathlib import Path
 from threading import Lock
-from typing import Any, TypeAlias
-
-import numpy as np
+from typing import Any
 
 from zarr.abc.store import (
     ByteRequest,
-    OffsetByteRequest,
-    RangeByteRequest,
     Store,
-    SuffixByteRequest,
 )
 from zarr.core.buffer import Buffer, BufferPrototype
 from zarr.core.buffer.core import default_buffer_prototype
 from zarr.storage._utils import normalize_path
-
-
-def buffer_size(buffer: Buffer) -> int:
-    """Calculate the size in bytes of a Buffer object."""
-    return buffer.nbytes
-
 
 
 def _listdir_from_keys(store: Store, path: str) -> list[str]:
@@ -56,10 +44,10 @@ def listdir(store: Store, path: Path | None = None) -> list[str]:
     `MutableMapping` interface.
     """
     path_str = normalize_path(path)
+    # Check if it's a Store object vs dict-like object
     if hasattr(store, "listdir"):
         # pass through
-        result = store.listdir(path_str)
-        return [str(item) for item in result]  # Ensure all items are strings
+        return store.listdir(path_str)
     else:
         # slow version, iterate through all keys
         warnings.warn(
@@ -68,55 +56,6 @@ def listdir(store: Store, path: Path | None = None) -> list[str]:
             stacklevel=2,
         )
         return _listdir_from_keys(store, path_str)
-
-
-def _get(path: Path, prototype: BufferPrototype, byte_range: ByteRequest | None) -> Buffer:
-    """
-    Read data from a file path with optional byte range support
-    and return requested data as a Buffer object.
-    """
-    if byte_range is None:
-        return prototype.buffer.from_bytes(path.read_bytes())
-    with path.open("rb") as f:
-        size = f.seek(0, io.SEEK_END)
-        if isinstance(byte_range, RangeByteRequest):
-            f.seek(byte_range.start)
-            return prototype.buffer.from_bytes(f.read(byte_range.end - f.tell()))
-        elif isinstance(byte_range, OffsetByteRequest):
-            f.seek(byte_range.offset)
-        elif isinstance(byte_range, SuffixByteRequest):
-            f.seek(max(0, size - byte_range.suffix))
-        else:
-            raise TypeError(f"Unexpected byte_range, got {byte_range}.")
-        return prototype.buffer.from_bytes(f.read())
-
-
-def _put(
-    path: Path,
-    value: Buffer,
-    start: int | None = None,
-    exclusive: bool = False,
-) -> int | None:
-    """
-    Write buffer data to a file path with optional partial write support.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if start is not None:
-        with path.open("r+b") as f:
-            f.seek(start)
-            # write takes any object supporting the buffer protocol
-            f.write(value.as_buffer_like())
-        return None
-    else:
-        view = value.as_buffer_like()
-        if exclusive:
-            mode = "xb"
-        else:
-            mode = "wb"
-        with path.open(mode=mode) as f:
-            # write takes any object supporting the buffer protocol
-            return f.write(view)
-
 
 class LRUStoreCache(Store):
     """
@@ -472,7 +411,7 @@ class LRUStoreCache(Store):
             self._current_size = 0
             self._invalidate_keys_unsafe()
 
-            
+
     def invalidate_keys(self) -> None:
         """Clear the keys cache and all related caches."""
         with self._mutex:
