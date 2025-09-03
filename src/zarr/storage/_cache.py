@@ -442,6 +442,12 @@ class LRUStoreCache(Store):
     def __eq__(self, value: object) -> bool:
         return type(self) is type(value) and self._store.__eq__(value._store)  # type: ignore[attr-defined]
 
+    def __str__(self) -> str:
+        return f"cache://{self._store}"
+
+    def __repr__(self) -> str:
+        return f"LRUStoreCache({self._store!r}, max_size={self._max_size})"
+
     async def delete(self, key: str) -> None:
         """
         Remove a key from the store.
@@ -486,14 +492,14 @@ class LRUStoreCache(Store):
         # Delegate to the underlying store
         return await self._store.exists(key)
 
-    async def _set(self, key: str, value: Buffer, exclusive: bool = False) -> None:
+    async def _set(self, key: str, value: Buffer, exclusive: bool = False, byte_range: tuple[int, int] | None = None) -> None:
         # Check if store is writable
         self._check_writable()
 
         # Check if it's a Store object vs dict-like object
         if hasattr(self._store, "supports_listing"):
             # It's a Store object - use async interface
-            await self._store.set(key, value)
+            await self._store.set(key, value, byte_range=byte_range)
         else:
             # It's a dict-like object (for tests) - use sync interface
             if hasattr(value, "to_bytes"):
@@ -651,9 +657,9 @@ class LRUStoreCache(Store):
                     if key.startswith(prefix):
                         yield key
 
-    async def set(self, key: str, value: Buffer) -> None:
+    async def set(self, key: str, value: Buffer, byte_range: tuple[int, int] | None = None) -> None:
         # docstring inherited
-        return await self._set(key, value)
+        return await self._set(key, value, byte_range=byte_range)
 
     async def set_partial_values(
         self, key_start_values: Iterable[tuple[str, int, bytes | bytearray | memoryview]]
