@@ -521,6 +521,17 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         assert sorted(root_listing3) == sorted(expected_root)
         assert store.listdir_call_count == 5  # New call due to invalidation
 
+        # Test the else branch - store without listdir method
+        keys = ["root/file1.txt", "root/file2.txt", "root/subdir/file3.txt", "other/file4.txt"]
+        dict_store = self.DictLikeClass(keys)
+        cache_dict = LRUStoreCache(dict_store, max_size=100)
+
+        # This should trigger the else branch and call _listdir_from_keys
+        with pytest.warns(UserWarning, match="Store.*has no.*listdir.*method"):
+            result = cache_dict.listdir(Path("root"))
+        expected = ["file1.txt", "file2.txt", "subdir"]
+        assert sorted(result) == sorted(expected)
+
     def test_listdir_from_keys(self) -> None:
         """Test the _listdir_from_keys function with various scenarios."""
 

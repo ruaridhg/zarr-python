@@ -55,7 +55,9 @@ def listdir(store: Store, path: Path | None = None) -> list[str]:
             "may want to inherit from `Store`.",
             stacklevel=2,
         )
-        return _listdir_from_keys(store, path_str)
+        # _listdir_from_keys expects a trailing slash for non-empty paths
+        listdir_path = path_str + "/" if path_str else path_str
+        return _listdir_from_keys(store, listdir_path)
 
 
 class LRUStoreCache(Store):
@@ -492,7 +494,13 @@ class LRUStoreCache(Store):
         # Delegate to the underlying store
         return await self._store.exists(key)
 
-    async def _set(self, key: str, value: Buffer, exclusive: bool = False, byte_range: tuple[int, int] | None = None) -> None:
+    async def _set(
+        self,
+        key: str,
+        value: Buffer,
+        exclusive: bool = False,
+        byte_range: tuple[int, int] | None = None,
+    ) -> None:
         # Check if store is writable
         self._check_writable()
 
