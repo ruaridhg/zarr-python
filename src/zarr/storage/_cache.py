@@ -172,7 +172,7 @@ class LRUStoreCache(Store):
     @classmethod
     async def open(cls, store: Store, *, max_size: int, **kwargs: Any) -> "LRUStoreCache":
         """
-        Create and open the LRU cache store.
+        Create and open a new LRU cache store.
 
         Parameters
         ----------
