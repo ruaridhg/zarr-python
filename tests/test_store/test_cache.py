@@ -18,6 +18,7 @@ from zarr.testing.store import StoreTests
 class CountingStore:
     def __init__(self) -> None:
         self.listdir_call_count = 0
+        self.supports_listing = True  # Add this line
         self._directories = {
             "root": ["file1.txt", "file2.txt", "subdir"],
             "root/subdir": ["file3.txt", "file4.txt", "nested"],

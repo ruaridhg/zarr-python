@@ -44,20 +44,30 @@ def listdir(store: Store, path: Path | None = None) -> list[str]:
     `MutableMapping` interface.
     """
     path_str = normalize_path(path)
-    # Check if it's a Store object vs dict-like object
-    if hasattr(store, "listdir"):
-        # pass through
-        return cast(list[str], store.listdir(path_str))
-    else:
-        # slow version, iterate through all keys
-        warnings.warn(
-            f"Store {store} has no `listdir` method. From zarr 2.9 onwards "
-            "may want to inherit from `Store`.",
-            stacklevel=2,
-        )
-        # _listdir_from_keys expects a trailing slash for non-empty paths
-        listdir_path = path_str + "/" if path_str else path_str
-        return _listdir_from_keys(store, listdir_path)
+
+    try:
+        # Check if it's a Store object that supports listing
+        if store.supports_listing:
+            return cast(list[str], store.listdir(path_str))  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+
+    try:
+        # Check if it has a listdir method directly (for test stores and legacy stores)
+        if callable(store.listdir):  # type: ignore[attr-defined]
+            return cast(list[str], store.listdir(path_str))  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+
+    # slow version, iterate through all keys
+    warnings.warn(
+        f"Store {store} has no `listdir` method. From zarr 2.9 onwards "
+        "may want to inherit from `Store`.",
+        stacklevel=2,
+    )
+    # _listdir_from_keys expects a trailing slash for non-empty paths
+    listdir_path = path_str + "/" if path_str else path_str
+    return _listdir_from_keys(store, listdir_path)
 
 
 class LRUStoreCache(Store):
@@ -507,7 +517,7 @@ class LRUStoreCache(Store):
         # Check if it's a Store object vs dict-like object
         if hasattr(self._store, "supports_listing"):
             # It's a Store object - use async interface
-            await self._store.set(key, value, byte_range=byte_range)
+            await self._store.set(key, value)
         else:
             # It's a dict-like object (for tests) - use sync interface
             if hasattr(value, "to_bytes"):
