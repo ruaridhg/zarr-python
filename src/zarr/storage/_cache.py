@@ -114,7 +114,7 @@ class LRUStoreCache(Store):
         self._keys_cache: list[str] | None = None
         self._contains_cache: dict[Any, Any] = {}
         self._listdir_cache: dict[str | None, list[str]] = {}
-        self._values_cache: OrderedDict[str, Any] = OrderedDict()
+        self._values_cache: OrderedDict[str, bytes] = OrderedDict()
         self._mutex = Lock()
         self.hits = self.misses = 0
 
@@ -176,7 +176,7 @@ class LRUStoreCache(Store):
         list[str] | None,
         dict[Any, Any],
         dict[str | None, list[str]],
-        OrderedDict[str, Any],
+        OrderedDict[str, bytes],
         int,
         int,
         bool,
@@ -205,7 +205,7 @@ class LRUStoreCache(Store):
             list[str] | None,
             dict[Any, Any],
             dict[str | None, list[str]],
-            OrderedDict[str, Any],
+            OrderedDict[str, bytes],
             int,
             int,
             bool,
@@ -282,7 +282,7 @@ class LRUStoreCache(Store):
         # Not in cache, delegate to underlying store
         return await self._store.getsize(key)
 
-    def _pop_value(self) -> dict[str, bytes]:
+    def _pop_value(self) -> bytes:
         # remove the first value from the cache, as this will be the least recently
         # used value
         _, v = self._values_cache.popitem(last=False)
@@ -483,7 +483,7 @@ class LRUStoreCache(Store):
         key_ranges: Iterable[tuple[str, ByteRequest | None]],
     ) -> list[Buffer | None]:
         # Delegate to the underlying store
-        if self._store.get_partial_values:
+        if self.supports_partial_writes:
             return await self._store.get_partial_values(prototype, key_ranges)
         else:
             # Fallback - get each value individually
@@ -495,40 +495,21 @@ class LRUStoreCache(Store):
 
     async def list(self) -> AsyncIterator[str]:
         # Delegate to the underlying store
-        if self._store.list:
+        if self.supports_listing:
             async for key in self._store.list():
                 yield key
-        else:
-            # Fallback for stores that don't have async list
-            if callable(self._store.keys):
-                for key in list(self._store.keys()):
-                    yield key
 
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
         # Delegate to the underlying store
-        if self._store.list_dir:
+        if self.supports_listing:
             async for key in self._store.list_dir(prefix):
                 yield key
-        else:
-            # Fallback using listdir
-            try:
-                listing = self.listdir(Path(prefix))
-                for item in listing:
-                    yield item
-            except (FileNotFoundError, NotADirectoryError, KeyError):
-                pass
 
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
         # Delegate to the underlying store
-        if self._store.list_prefix:
+        if self.supports_listing:
             async for key in self._store.list_prefix(prefix):
                 yield key
-        else:
-            # Fallback - filter all keys by prefix
-            if callable(self._store.keys):
-                for key in list(self._store.keys()):
-                    if key.startswith(prefix):
-                        yield key
 
     async def set(self, key: str, value: Buffer, byte_range: tuple[int, int] | None = None) -> None:
         # docstring inherited
@@ -541,11 +522,11 @@ class LRUStoreCache(Store):
         self._check_writable()
 
         # Delegate to the underlying store
-        if self._store.set_partial_values:
+        if self.supports_partial_writes:
             await self._store.set_partial_values(key_start_values)
         else:
             # Fallback - this is complex to implement properly, so just invalidate cache
-            for key, _start, _value in key_start_values:
+            for _key, _start, _value in key_start_values:
                 # For now, just invalidate the cache for these keys
                 self.invalidate_keys()
                 self.invalidate_values()
