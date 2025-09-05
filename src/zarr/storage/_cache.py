@@ -105,7 +105,7 @@ class LRUStoreCache(Store):
             raise ValueError("max_size must be a positive integer (bytes)")
 
         # Always inherit read_only state from the underlying store
-        read_only = getattr(store, "read_only", False)
+        read_only = store.read_only
         super().__init__(read_only=read_only)
 
         self._store = store
@@ -407,16 +407,7 @@ class LRUStoreCache(Store):
         # Check if store is writable
         self._check_writable()
 
-        # Check if it's a Store object vs dict-like object
-        if hasattr(self._store, "supports_listing"):
-            # It's a Store object - use async interface
-            await self._store.set(key, value)
-        else:
-            # It's a dict-like object (for tests) - use sync interface
-            if hasattr(value, "to_bytes"):
-                cast(dict[str, Any], self._store)[key] = value.to_bytes()
-            else:
-                cast(dict[str, Any], self._store)[key] = value
+        await self._store.set(key, value)
 
         # Update cache
         self.invalidate_keys()
@@ -435,29 +426,14 @@ class LRUStoreCache(Store):
 
         # For byte_range requests, don't use cache for now (could be optimized later)
         if byte_range is not None:
-            if hasattr(self._store, "get"):
-                # Check if it's an async Store.get method (takes prototype and byte_range)
-                try:
-                    if prototype is None:
-                        prototype = default_buffer_prototype()
-                    return await self._store.get(key, prototype, byte_range)
-                except TypeError:
-                    # Fallback to sync get from mapping - get full value and slice later
-                    # For now, just return None for byte range requests on sync stores
-                    return None
-            else:
-                # Fallback - get full value from mapping and slice
-                try:
-                    if hasattr(self._store, "__getitem__"):
-                        full_value = cast(dict[str, Any], self._store)[key]
-                        if prototype is None:
-                            prototype = default_buffer_prototype()
-                        # This is a simplified implementation - a full implementation would handle byte ranges
-                        return prototype.buffer.from_bytes(full_value)
-                    else:
-                        return None
-                except KeyError:
-                    return None
+            try:
+                if prototype is None:
+                    prototype = default_buffer_prototype()
+                return await self._store.get(key, prototype, byte_range)
+            except TypeError:
+                # Fallback to sync get from mapping - get full value and slice later
+                # For now, just return None for byte range requests on sync stores
+                return None
 
         try:
             # Try cache first
@@ -470,26 +446,13 @@ class LRUStoreCache(Store):
                 return prototype.buffer.from_bytes(value)
         except KeyError:
             # Cache miss - get from store
-            if hasattr(self._store, "get"):
-                # Try async Store.get method first
-                try:
-                    if prototype is None:
-                        prototype = default_buffer_prototype()
-                    result = await self._store.get(key, prototype, byte_range)
-                except TypeError:
-                    # Fallback for sync stores - use __getitem__ instead
-                    try:
-                        if hasattr(self._store, "__getitem__"):
-                            value = cast(dict[str, Any], self._store)[key]
-                            if prototype is None:
-                                prototype = default_buffer_prototype()
-                            result = prototype.buffer.from_bytes(value)
-                        else:
-                            result = None
-                    except KeyError:
-                        result = None
-            else:
-                # Fallback for sync stores/mappings
+
+            try:
+                if prototype is None:
+                    prototype = default_buffer_prototype()
+                result = await self._store.get(key, prototype, byte_range)
+            except TypeError:
+                # Fallback for sync stores - use __getitem__ instead
                 try:
                     if hasattr(self._store, "__getitem__"):
                         value = cast(dict[str, Any], self._store)[key]
@@ -520,7 +483,7 @@ class LRUStoreCache(Store):
         key_ranges: Iterable[tuple[str, ByteRequest | None]],
     ) -> list[Buffer | None]:
         # Delegate to the underlying store
-        if hasattr(self._store, "get_partial_values"):
+        if self._store.get_partial_values:
             return await self._store.get_partial_values(prototype, key_ranges)
         else:
             # Fallback - get each value individually
@@ -532,18 +495,18 @@ class LRUStoreCache(Store):
 
     async def list(self) -> AsyncIterator[str]:
         # Delegate to the underlying store
-        if hasattr(self._store, "list"):
+        if self._store.list:
             async for key in self._store.list():
                 yield key
         else:
             # Fallback for stores that don't have async list
-            if hasattr(self._store, "keys") and callable(self._store.keys):
+            if callable(self._store.keys):
                 for key in list(self._store.keys()):
                     yield key
 
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
         # Delegate to the underlying store
-        if hasattr(self._store, "list_dir"):
+        if self._store.list_dir:
             async for key in self._store.list_dir(prefix):
                 yield key
         else:
@@ -557,12 +520,12 @@ class LRUStoreCache(Store):
 
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
         # Delegate to the underlying store
-        if hasattr(self._store, "list_prefix"):
+        if self._store.list_prefix:
             async for key in self._store.list_prefix(prefix):
                 yield key
         else:
             # Fallback - filter all keys by prefix
-            if hasattr(self._store, "keys") and callable(self._store.keys):
+            if callable(self._store.keys):
                 for key in list(self._store.keys()):
                     if key.startswith(prefix):
                         yield key
@@ -578,7 +541,7 @@ class LRUStoreCache(Store):
         self._check_writable()
 
         # Delegate to the underlying store
-        if hasattr(self._store, "set_partial_values"):
+        if self._store.set_partial_values:
             await self._store.set_partial_values(key_start_values)
         else:
             # Fallback - this is complex to implement properly, so just invalidate cache

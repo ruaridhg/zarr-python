@@ -20,6 +20,8 @@ class CountingDict(dict[Any, Any]):
     def __init__(self) -> None:
         super().__init__()
         self.counter: Counter[tuple[str, Any] | str] = Counter()
+        
+        self.read_only = False
 
         # Add Store-like attributes that LRUStoreCache expects
         self.supports_writes = True
