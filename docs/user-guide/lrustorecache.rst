@@ -43,7 +43,7 @@ The ``max_size`` parameter controls the maximum memory usage of the cache in byt
 ``None`` for unlimited cache size (use with caution).
 
 Performance Benefits
--------------------
+--------------------
 
 The LRUStoreCache provides significant performance improvements for repeated data access:
 
@@ -93,7 +93,7 @@ The first access to any chunk will be slow (network retrieval), but subsequent a
 to the same chunk will be served from the local cache, providing dramatic speedup.
 
 Cache Configuration
-------------------
+-------------------
 
 The LRUStoreCache can be configured with several parameters:
 
@@ -113,7 +113,7 @@ The LRUStoreCache can be configured with several parameters:
    >>> cache = zarr.storage.LRUStoreCache(store, max_size=2**28, read_only=True)
 
 Cache Statistics
----------------
+----------------
 
 The LRUStoreCache provides statistics to monitor cache performance:
 
@@ -150,7 +150,7 @@ Best Practices
 4. **Consider data locality**: Access data in chunks sequentially rather than jumping around randomly to maximize cache reuse
 
 Examples from Real Usage
------------------------
+------------------------
 
 Here's a complete example demonstrating cache effectiveness:
 
