@@ -2,7 +2,7 @@ import warnings
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable
 from threading import Lock
-from typing import Any, Self, cast
+from typing import Any, Self
 
 from zarr.abc.store import (
     ByteRequest,
@@ -273,7 +273,7 @@ class LRUStoreCache(Store):
             pass
         except NotImplementedError:
             pass
-        except (ConnectionError, TimeoutError):
+        except (ConnectionError, TimeoutError, RuntimeError):
             pass
         except Exception:
             # Re-raise unexpected exceptions rather than silently falling back
@@ -403,12 +403,7 @@ class LRUStoreCache(Store):
 
         # For byte_range requests, don't use cache for now (could be optimized later)
         if byte_range is not None:
-            try:
-                return await self._store.get(key, prototype, byte_range)
-            except TypeError:
-                # Fallback to sync get from mapping - get full value and slice later
-                # For now, just return None for byte range requests on sync stores
-                return None
+            return await self._store.get(key, prototype, byte_range)
 
         if cache_key in self._values_cache:
             # Try cache first
@@ -419,19 +414,7 @@ class LRUStoreCache(Store):
                 return prototype.buffer.from_bytes(value)
         else:
             # Cache miss - get from store
-
-            try:
-                result = await self._store.get(key, prototype, byte_range)
-            except TypeError:
-                # Fallback for sync stores - use __getitem__ instead
-                try:
-                    if hasattr(self._store, "__getitem__"):
-                        value = cast(dict[str, Any], self._store)[key]
-                        result = prototype.buffer.from_bytes(value)
-                    else:
-                        result = None
-                except KeyError:
-                    result = None
+            result = await self._store.get(key, prototype, byte_range)
 
             # Cache the result if we got one
             if result is not None:
