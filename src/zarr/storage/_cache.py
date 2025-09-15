@@ -1,10 +1,8 @@
-import asyncio
 import warnings
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable
-from pathlib import Path
 from threading import Lock
-from typing import Any, cast
+from typing import Any, Self, cast
 
 from zarr.abc.store import (
     ByteRequest,
@@ -111,21 +109,14 @@ class LRUStoreCache(Store):
         self._store = store
         self._max_size = max_size
         self._current_size = 0
-        self._keys_cache: list[str] | None = None
         self._contains_cache: dict[Any, Any] = {}
         self._listdir_cache: dict[str | None, list[str]] = {}
         self._values_cache: OrderedDict[str, bytes] = OrderedDict()
         self._mutex = Lock()
         self.hits = self.misses = 0
 
-        # Handle root attribute if present in underlying store
-        if hasattr(store, "root"):
-            self.root = store.root
-        else:
-            self.root = Path("/")  # Default root path
-
     @classmethod
-    async def open(cls, store: Store, *, max_size: int, read_only: bool = False) -> "LRUStoreCache":
+    async def open(cls, store: Store, *, max_size: int, read_only: bool = False) -> Self:
         """
         Create and open a new LRU cache store.
 
@@ -173,7 +164,6 @@ class LRUStoreCache(Store):
         Store,
         int,
         int,
-        list[str] | None,
         dict[Any, Any],
         dict[str | None, list[str]],
         OrderedDict[str, bytes],
@@ -186,7 +176,6 @@ class LRUStoreCache(Store):
             self._store,
             self._max_size,
             self._current_size,
-            self._keys_cache,
             self._contains_cache,
             self._listdir_cache,
             self._values_cache,
@@ -202,7 +191,6 @@ class LRUStoreCache(Store):
             Store,
             int,
             int,
-            list[str] | None,
             dict[Any, Any],
             dict[str | None, list[str]],
             OrderedDict[str, bytes],
@@ -216,7 +204,6 @@ class LRUStoreCache(Store):
             self._store,
             self._max_size,
             self._current_size,
-            self._keys_cache,
             self._contains_cache,
             self._listdir_cache,
             self._values_cache,
@@ -228,7 +215,7 @@ class LRUStoreCache(Store):
         self._mutex = Lock()
 
     def __len__(self) -> int:
-        return len(self._keys())
+        return len(self._values_cache)
 
     async def clear(self) -> None:
         """
@@ -241,28 +228,11 @@ class LRUStoreCache(Store):
         await self._store.clear()
         self.invalidate()
 
-    def _keys(self) -> list[str]:
-        if self._keys_cache is None:
-            if self._store.supports_listing:
-                try:
-
-                    async def collect_keys() -> list[str]:
-                        return [str(key) async for key in self._store.list()]
-
-                    keys = asyncio.run(collect_keys())
-                    self._keys_cache = keys
-                except RuntimeError:
-                    # Already in async context
-                    raise NotImplementedError(
-                        "Cannot list keys in async context - _keys() method needs to be async"
-                    ) from None
-            else:
-                # Store doesn't support listing
-                self._keys_cache = []
-
-        return self._keys_cache
-
-    async def getsize(self, key: str) -> int:
+    async def getsize(
+        self,
+        key: str,
+        prototype: BufferPrototype | None = None,
+    ) -> int:
         """
         Get the size in bytes of the value stored at the given key.
 
@@ -280,7 +250,22 @@ class LRUStoreCache(Store):
                 return len(cached_value)
 
         # Not in cache, delegate to underlying store
-        return await self._store.getsize(key)
+        size = await self._store.getsize(key)
+
+        # Try to get and cache the value if it's reasonably small i.e. ≤10% of max cache size
+        if size <= self._max_size // 10:
+            if prototype is None:
+                prototype = default_buffer_prototype()
+            try:
+                value = await self._store.get(key, prototype)
+                if value is not None:
+                    with self._mutex:
+                        if cache_key not in self._values_cache:
+                            self._cache_value(cache_key, value)
+            except Exception:
+                pass
+
+        return size
 
     def _pop_value(self) -> bytes:
         # remove the first value from the cache, as this will be the least recently
@@ -289,6 +274,7 @@ class LRUStoreCache(Store):
         return v
 
     def _accommodate_value(self, value_size: int) -> None:
+        # Remove items from the cache until there's enough room for a value
         while self._current_size + value_size > self._max_size:
             v = self._pop_value()
             self._current_size -= len(v)
@@ -323,17 +309,9 @@ class LRUStoreCache(Store):
     def invalidate(self) -> None:
         """Completely clear the cache."""
 
-        self.invalidate_keys()
         with self._mutex:
             self._values_cache.clear()
             self._current_size = 0
-
-    def invalidate_keys(self) -> None:
-        """Clear the keys cache and all related caches."""
-        with self._mutex:
-            self._keys_cache = None
-            self._contains_cache.clear()
-            self._listdir_cache.clear()
 
     def invalidate_values(self) -> None:
         """Clear only the values cache, keeping other caches intact."""
@@ -374,7 +352,6 @@ class LRUStoreCache(Store):
             )
 
         # Invalidate cache entries
-        self.invalidate_keys()
         self.invalidate_values()
 
     async def exists(self, key: str) -> bool:
@@ -397,24 +374,6 @@ class LRUStoreCache(Store):
         # Not in cache, delegate to underlying store
         return await self._store.exists(key)
 
-    async def _set(
-        self,
-        key: str,
-        value: Buffer,
-        exclusive: bool = False,
-        byte_range: tuple[int, int] | None = None,
-    ) -> None:
-        # Check if store is writable
-        self._check_writable()
-
-        await self._store.set(key, value)
-
-        # Update cache
-        self.invalidate_keys()
-        self.invalidate_values()
-        cache_key = key
-        self._cache_value(cache_key, value)
-
     async def get(
         self,
         key: str,
@@ -424,40 +383,35 @@ class LRUStoreCache(Store):
         # Use the cache for get operations
         cache_key = key
 
+        if prototype is None:
+            prototype = default_buffer_prototype()
+
         # For byte_range requests, don't use cache for now (could be optimized later)
         if byte_range is not None:
             try:
-                if prototype is None:
-                    prototype = default_buffer_prototype()
                 return await self._store.get(key, prototype, byte_range)
             except TypeError:
                 # Fallback to sync get from mapping - get full value and slice later
                 # For now, just return None for byte range requests on sync stores
                 return None
 
-        try:
+        if cache_key in self._values_cache:
             # Try cache first
             with self._mutex:
                 value = self._values_cache[cache_key]
                 self.hits += 1
                 self._values_cache.move_to_end(cache_key)
-                if prototype is None:
-                    prototype = default_buffer_prototype()
                 return prototype.buffer.from_bytes(value)
-        except KeyError:
+        else:
             # Cache miss - get from store
 
             try:
-                if prototype is None:
-                    prototype = default_buffer_prototype()
                 result = await self._store.get(key, prototype, byte_range)
             except TypeError:
                 # Fallback for sync stores - use __getitem__ instead
                 try:
                     if hasattr(self._store, "__getitem__"):
                         value = cast(dict[str, Any], self._store)[key]
-                        if prototype is None:
-                            prototype = default_buffer_prototype()
                         result = prototype.buffer.from_bytes(value)
                     else:
                         result = None
@@ -513,7 +467,22 @@ class LRUStoreCache(Store):
 
     async def set(self, key: str, value: Buffer, byte_range: tuple[int, int] | None = None) -> None:
         # docstring inherited
-        return await self._set(key, value, byte_range=byte_range)
+        # Check if store is writable
+        self._check_writable()
+
+        # Write to underlying store first
+        await self._store.set(key, value)
+
+        # Update cache with the new value
+        cache_key = key
+        with self._mutex:
+            if cache_key in self._values_cache:
+                old_value = self._values_cache[cache_key]
+                self._current_size -= len(old_value)
+                del self._values_cache[cache_key]
+
+        # Cache the new value
+        self._cache_value(cache_key, value)
 
     async def set_partial_values(
         self, key_start_values: Iterable[tuple[str, int, bytes | bytearray | memoryview]]
@@ -528,5 +497,4 @@ class LRUStoreCache(Store):
             # Fallback - this is complex to implement properly, so just invalidate cache
             for _key, _start, _value in key_start_values:
                 # For now, just invalidate the cache for these keys
-                self.invalidate_keys()
                 self.invalidate_values()
