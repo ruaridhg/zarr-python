@@ -247,9 +247,11 @@ class LRUStoreCache(Store):
                 cached_value = self._values_cache[cache_key]
                 # Move to end to mark as recently used
                 self._values_cache.move_to_end(cache_key)
+                self.hits +=1
                 return len(cached_value)
 
         # Not in cache, delegate to underlying store
+        self.misses += 1
         size = await self._store.getsize(key)
 
         # Try to get and cache the value if it's reasonably small i.e. ≤10% of max cache size
@@ -481,8 +483,8 @@ class LRUStoreCache(Store):
                 self._current_size -= len(old_value)
                 del self._values_cache[cache_key]
 
-        # Cache the new value
-        self._cache_value(cache_key, value)
+            # Cache the new value
+            self._cache_value(cache_key, value)
 
     async def set_partial_values(
         self, key_start_values: Iterable[tuple[str, int, bytes | bytearray | memoryview]]

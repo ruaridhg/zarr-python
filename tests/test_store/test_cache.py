@@ -14,14 +14,14 @@ from zarr.storage import LRUStoreCache, MemoryStore
 from zarr.testing.store import StoreTests
 
 
-class CountingDict(dict[Any, Any]):
-    """A dictionary that counts operations for testing purposes."""
+class CounterStore(MemoryStore):  # type: ignore[misc]
+    """
+    A thin wrapper of MemoryStore to count different method calls for testing.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.counter: Counter[tuple[str, Any] | str] = Counter()
-        
-        self.read_only = False
 
         # Add Store-like attributes that LRUStoreCache expects
         self.supports_writes = True
@@ -29,30 +29,35 @@ class CountingDict(dict[Any, Any]):
         self.supports_partial_writes = False
         self.supports_listing = True
 
+    async def clear(self) -> None:
+        self.counter["clear"] += 1
+        # docstring inherited
+        self._store_dict.clear()
+
     def __getitem__(self, key: Any) -> Any:
         self.counter["__getitem__", key] += 1
-        return super().__getitem__(key)
+        return self._store_dict[key]  # Access internal dict directly
 
     def __setitem__(self, key: Any, value: Any) -> None:
         self.counter["__setitem__", key] += 1
-        return super().__setitem__(key, value)
+        self._store_dict[key] = value  # Set in internal dict directly
 
     def __contains__(self, key: Any) -> bool:
         self.counter["__contains__", key] += 1
-        return super().__contains__(key)
+        return key in self._store_dict  # Check internal dict directly
 
     def __iter__(self) -> Any:
         self.counter["__iter__"] += 1
-        return super().__iter__()
+        return iter(self._store_dict)  # Iterate over internal dict
 
     def keys(self) -> Any:
         self.counter["keys"] += 1
-        return super().keys()
+        return self._store_dict.keys()  # Return keys from internal dict
 
     def __delitem__(self, key: Any) -> None:
         """Add delete support for testing."""
         self.counter["__delitem__", key] += 1
-        return super().__delitem__(key)
+        del self._store_dict[key]  # Delete from internal dict directly
 
     async def set(self, key: str, value: Any) -> None:
         """Store-like set method for async interface."""
@@ -105,7 +110,7 @@ def skip_if_nested_chunks(**kwargs: Any) -> None:
 class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc]
     store_cls = LRUStoreCache
     buffer_cls = cpu.Buffer
-    CountingClass = CountingDict
+    CountingClass = CounterStore
     LRUStoreClass = LRUStoreCache
     root = ""
 
@@ -331,6 +336,63 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
             assert "1,000 bytes" in warning_message  # Check formatted number
             assert "500 bytes" in warning_message  # Check cache size
             assert "Consider increasing max_size" in warning_message
+
+    async def test_getsize_proactive_caching(self) -> None:
+        """Test that getsize() proactively caches small values but not large ones."""
+        store = self.CountingClass()
+        cache = self.LRUStoreClass(store, max_size=1000)  # 1KB cache
+
+        # Small value: 50 bytes < 100 bytes (10% of cache)
+        store["small"] = b"x" * 50
+        # Large value: 200 bytes > 100 bytes (10% of cache)
+        store["large"] = b"y" * 200
+
+        # Small value should be proactively cached after getsize()
+        await cache.getsize("small")  # miss += 1
+        await cache.get("small")
+        assert cache.hits == 1  # Cache hit from proactive caching
+        assert cache.misses == 1  # Only the getsize miss
+
+        # Large value should NOT be proactively cached
+        await cache.getsize("large")  # miss += 1
+        await cache.get("large")
+        assert cache.hits == 1  # No additional hits
+        assert cache.misses == 3  # getsize miss + get miss
+
+    async def test_getsize_uses_cache(self) -> None:
+        """Test that getsize() uses cached values when available."""
+        store = self.CountingClass()
+        cache = self.LRUStoreClass(store, max_size=1000)
+
+        store["key"] = b"value"
+
+        # Populate cache
+        await cache.get("key")
+        assert 1 == store.counter["__getitem__", "key"]
+
+        # getsize() should use cached value
+        size = await cache.getsize("key")
+        assert size == 5
+        assert 1 == store.counter["__getitem__", "key"]  # No additional store access
+        assert cache.hits == 1
+
+    async def test_getsize_exception_handling(self) -> None:
+        """Test that getsize() handles get() exceptions gracefully."""
+
+        class FailingStore(CounterStore):
+            async def get(self, key: str, prototype: Any = None) -> Any:
+                if key == "fail":
+                    raise RuntimeError("Simulated failure")
+                return await super().get(key, prototype)
+
+        store = FailingStore()
+        cache = self.LRUStoreClass(store, max_size=1000)
+        store["fail"] = b"x" * 50  # Small value that would be cached
+
+        # getsize() should work despite get() failing
+        size = await cache.getsize("fail")
+        assert size == 50
+        assert cache.hits == 0  # No successful caching
 
     async def test_get_partial_values(self) -> None:
         """Test get_partial_values method."""
