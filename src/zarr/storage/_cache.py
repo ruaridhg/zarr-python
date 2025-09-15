@@ -236,8 +236,10 @@ class LRUStoreCache(Store):
         """
         Get the size in bytes of the value stored at the given key.
 
-        This method first checks the cache for the value to avoid
-        unnecessary calls to the underlying store.
+        For remote stores, this method attempts to get and cache the value
+        since network latency typically dominates the cost of both getsize()
+        and get() operations, making it more efficient to retrieve the full
+        value during size queries.
         """
         cache_key = key
 
@@ -252,22 +254,33 @@ class LRUStoreCache(Store):
 
         # Not in cache, delegate to underlying store
         self.misses += 1
-        size = await self._store.getsize(key)
 
-        # Try to get and cache the value if it's reasonably small i.e. ≤10% of max cache size
-        if size <= self._max_size // 10:
-            if prototype is None:
-                prototype = default_buffer_prototype()
-            try:
-                value = await self._store.get(key, prototype)
-                if value is not None:
-                    with self._mutex:
-                        if cache_key not in self._values_cache:
-                            self._cache_value(cache_key, value)
-            except Exception:
-                pass
+        if prototype is None:
+            prototype = default_buffer_prototype()
 
-        return size
+        # Try to get the full value first (better for remote stores)
+        try:
+            value = await self._store.get(key, prototype)
+            if value is not None:
+                # Successfully got the value, cache it and return size
+                with self._mutex:
+                    if cache_key not in self._values_cache:
+                        self._cache_value(cache_key, value)
+
+                # Return size based on the actual value we retrieved
+                return len(value)
+        except (KeyError, FileNotFoundError):
+            pass
+        except NotImplementedError:
+            pass
+        except (ConnectionError, TimeoutError):
+            pass
+        except Exception:
+            # Re-raise unexpected exceptions rather than silently falling back
+            raise
+
+        # Fallback to underlying store's getsize() method
+        return await self._store.getsize(key)
 
     def _pop_value(self) -> bytes:
         # remove the first value from the cache, as this will be the least recently
