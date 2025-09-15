@@ -34,8 +34,6 @@ class CounterStore(MemoryStore):  # type: ignore[misc]
         # docstring inherited
         self._store_dict.clear()
 
-    # Dict-like methods removed - LRUStoreCache now uses only async Store interface
-
     async def set(self, key: str, value: Any) -> None:
         """Store-like set method for async interface."""
         self.counter["set", key] += 1
@@ -79,11 +77,6 @@ class CounterStore(MemoryStore):  # type: ignore[misc]
             raise
 
 
-def skip_if_nested_chunks(**kwargs: Any) -> None:
-    if kwargs.get("dimension_separator") == "/":
-        pytest.skip("nested chunks are unsupported")
-
-
 class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc]
     store_cls = LRUStoreCache
     buffer_cls = cpu.Buffer
@@ -115,13 +108,10 @@ class TestLRUStoreCache(StoreTests[LRUStoreCache, Buffer]):  # type: ignore[misc
         return {"store": MemoryStore(), "max_size": 2**27}
 
     def create_store(self, **kwargs: Any) -> LRUStoreCache:
-        # wrapper therefore no dimension_separator argument
-        skip_if_nested_chunks(**kwargs)
         return self.LRUStoreClass(MemoryStore(), max_size=2**27)
 
     def create_store_from_mapping(self, mapping: dict[str, Any], **kwargs: Any) -> LRUStoreCache:
         # Handle creation from existing mapping
-        skip_if_nested_chunks(**kwargs)
         # Create a MemoryStore from the mapping
         underlying_store = MemoryStore()
         if mapping:

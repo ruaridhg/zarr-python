@@ -249,7 +249,7 @@ class LRUStoreCache(Store):
                 cached_value = self._values_cache[cache_key]
                 # Move to end to mark as recently used
                 self._values_cache.move_to_end(cache_key)
-                self.hits +=1
+                self.hits += 1
                 return len(cached_value)
 
         # Not in cache, delegate to underlying store
